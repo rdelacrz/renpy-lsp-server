@@ -1,0 +1,18 @@
+[package]
+name = "renpy-lsp-server"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "renpy-lsp-server"
+path = "src/main.rs"
+
+[lib]
+name = "renpy_lsp"
+path = "src/lib.rs"
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tower-lsp = { version = "0.20.0", features = ["proposed"] }
+tokio = { version = "1", features = ["full"] }
