@@ -4,7 +4,7 @@
 
 use std::collections::HashMap;
 
-use tower_lsp::lsp_types::{Diagnostic, Url};
+use tower_lsp::lsp_types::{Diagnostic, DiagnosticSeverity, Position, Range, Url};
 
 use crate::analysis::{self, Symbol};
 
@@ -17,6 +17,20 @@ pub struct DocumentStore {
     pub symbols: Vec<Symbol>,
     /// Most recent diagnostics for this document.
     pub diagnostics: Vec<Diagnostic>,
+}
+
+fn extract_error_line(message: &str) -> Option<u32> {
+    let lowered = message.to_ascii_lowercase();
+    for key in ["line ", "line:", "line="] {
+        if let Some(idx) = lowered.find(key) {
+            let start = idx + key.len();
+            let digits: String = message[start..].chars().take_while(|c| c.is_ascii_digit()).collect();
+            if let Ok(line) = digits.parse::<u32>() {
+                return line.checked_sub(1).or(Some(0));
+            }
+        }
+    }
+    None
 }
 
 impl DocumentStore {
@@ -104,9 +118,25 @@ impl WorkspaceIndex {
                     all_symbols.extend(doc.symbols.clone());
                     doc.diagnostics.clear();
                 }
-                Err(_err) => {
-                    // Clear stale symbols on parse failure.
+                Err(err) => {
+                    // Clear stale symbols on parse failure and surface the
+                    // analysis problem as an LSP diagnostic.
                     doc.symbols.clear();
+                    let line = extract_error_line(err.message()).unwrap_or(0);
+                    doc.diagnostics = vec![Diagnostic {
+                        range: Range {
+                            start: Position::new(line, 0),
+                            end: Position::new(line, 1),
+                        },
+                        severity: Some(DiagnosticSeverity::ERROR),
+                        code: None,
+                        code_description: None,
+                        source: Some("renpy-lsp".to_string()),
+                        message: err.to_string(),
+                        related_information: None,
+                        tags: None,
+                        data: None,
+                    }];
                 }
             }
         }
