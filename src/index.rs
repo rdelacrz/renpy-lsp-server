@@ -24,7 +24,10 @@ fn extract_error_line(message: &str) -> Option<u32> {
     for key in ["line ", "line:", "line="] {
         if let Some(idx) = lowered.find(key) {
             let start = idx + key.len();
-            let digits: String = message[start..].chars().take_while(|c| c.is_ascii_digit()).collect();
+            let digits: String = message[start..]
+                .chars()
+                .take_while(|c| c.is_ascii_digit())
+                .collect();
             if let Ok(line) = digits.parse::<u32>() {
                 return line.checked_sub(1).or(Some(0));
             }

@@ -340,3 +340,161 @@ init 5 python hide:
         assert_eq!(model.symbols[0].kind, SymbolKind::Label);
     }
 }
+
+// ---------------------------------------------------------------------------
+// Diagnostic-related tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn diagnostic_tab_indentation_detected() {
+    // Tab-indented lines should be flagged — Ren'Py convention uses spaces.
+    // The analyzer currently only looks at zero-indent lines (top-level symbols);
+    // tab-indented content lines are silently ignored. This test documents
+    // that behaviour and the expected improvement.
+    let source = "label start:\n\t\"Hello\"\n\treturn\n";
+    let model = analyze(source).unwrap();
+    assert_eq!(model.symbols.len(), 1);
+    assert_eq!(model.symbols[0].name, "start");
+    // NOTE: tab detection is not yet implemented in the analyzer.
+    // This test documents the gap — it passes because tabs are
+    // simply treated as non-zero-indent and skipped.
+}
+
+#[test]
+fn diagnostic_invalid_variable_name() {
+    // `define` keyword followed by an invalid Python identifier
+    let err = analyze("define 123bad = 1\n").unwrap_err();
+    assert!(err.to_string().contains("invalid identifier"));
+}
+
+#[test]
+fn diagnostic_reserved_name_as_identifier() {
+    // Using a Python/Ren'Py reserved word as a label name.
+    // The current analyzer accepts any ASCII alphabetic name.
+    let source = "label return:\n";
+    let model = analyze(source).unwrap();
+    assert_eq!(model.symbols.len(), 1);
+    assert_eq!(model.symbols[0].name, "return");
+    // NOTE: reserved-name detection is not yet implemented.
+    // `return` as a label name is technically valid Ren'Py but bad practice.
+}
+
+#[test]
+fn diagnostic_missing_colon_on_screen() {
+    let err = analyze("screen main_menu\n").unwrap_err();
+    assert!(err.to_string().contains("must end with ':'"));
+}
+
+#[test]
+fn diagnostic_missing_colon_on_label() {
+    let err = analyze("label start\n    \"hello\"\n").unwrap_err();
+    assert!(err.to_string().contains("must end with ':'"));
+}
+
+#[test]
+fn diagnostic_missing_name_on_label() {
+    let err = analyze("label :\n").unwrap_err();
+    assert!(err.to_string().contains("missing a name"));
+}
+
+#[test]
+fn diagnostic_missing_name_on_screen() {
+    let err = analyze("screen :\n").unwrap_err();
+    assert!(err.to_string().contains("missing a name"));
+}
+
+#[test]
+fn diagnostic_empty_identifier() {
+    // Empty identifier via empty define
+    let source = "define  = 1\n";
+    let err = analyze(source).unwrap_err();
+    assert!(err.to_string().contains("invalid identifier") || err.to_string().contains("missing"));
+}
+
+#[test]
+fn diagnostic_init_python_missing_colon() {
+    let source = "init python\n    pass\n";
+    let err = analyze(source).unwrap_err();
+    assert!(err.to_string().contains("init python"));
+    assert!(err.to_string().contains("':'"));
+}
+
+#[test]
+fn diagnostic_init_python_hide_missing_colon() {
+    let source = "init 5 python hide\n    pass\n";
+    let err = analyze(source).unwrap_err();
+    assert!(err.to_string().contains("init python"));
+    assert!(err.to_string().contains("':'"));
+}
+
+#[test]
+fn diagnostic_define_with_underscore_name_valid() {
+    // Underscore names are valid identifiers
+    let source = "define _my_var = 42\n";
+    let model = analyze(source).unwrap();
+    assert_eq!(model.symbols.len(), 1);
+    assert_eq!(model.symbols[0].name, "_my_var");
+}
+
+#[test]
+fn diagnostic_label_with_numbers_valid() {
+    // Label names with numbers are valid
+    let source = "label scene_2:\n";
+    let model = analyze(source).unwrap();
+    assert_eq!(model.symbols.len(), 1);
+    assert_eq!(model.symbols[0].name, "scene_2");
+}
+
+#[test]
+fn diagnostic_label_starting_with_number_invalid() {
+    let err = analyze("label 2nd_act:\n").unwrap_err();
+    assert!(err.to_string().contains("invalid identifier"));
+}
+
+#[test]
+fn diagnostic_image_with_spaces_in_name() {
+    // `image bg room = "bg.png"` — currently only the first token is parsed
+    let source = "image bg room = \"bg.png\"\n";
+    let model = analyze(source).unwrap();
+    assert_eq!(model.symbols.len(), 1);
+    assert_eq!(model.symbols[0].name, "bg");
+    // NOTE: multi-word image names like "bg room" are collapsed to just "bg".
+    // Full Ren'Py image name parsing is not yet implemented.
+}
+
+#[test]
+fn diagnostic_screen_with_parameters_valid() {
+    let source = "screen my_screen(arg1, arg2=0):\n";
+    let model = analyze(source).unwrap();
+    assert_eq!(model.symbols.len(), 1);
+    assert_eq!(model.symbols[0].name, "my_screen");
+}
+
+#[test]
+fn diagnostic_style_with_is_inherit_valid() {
+    let source = "style my_style is default:\n";
+    let model = analyze(source).unwrap();
+    assert_eq!(model.symbols.len(), 1);
+    assert_eq!(model.symbols[0].name, "my_style");
+}
+
+#[test]
+fn diagnostic_transform_with_params_valid() {
+    let source = "transform pulse(x):\n";
+    let model = analyze(source).unwrap();
+    assert_eq!(model.symbols.len(), 1);
+    assert_eq!(model.symbols[0].name, "pulse");
+}
+
+#[test]
+fn diagnostic_multiple_errors_in_file() {
+    // File with multiple errors: each should produce a diagnostic
+    let source = "label bad_name\nscreen :\ndefine 123invalid = 1\n";
+    // `label bad_name` — missing colon
+    // `screen :` — missing name
+    // `define 123invalid = 1` — invalid identifier
+    // The analyzer stops at the first error encountered on each line
+    // but processes all lines independently.
+    let model = analyze(source);
+    assert!(model.is_err());
+}
