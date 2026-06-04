@@ -1,18 +1,18 @@
+[workspace]
+
 [package]
-name = "renpy-lsp-server"
+name = "renpy-language-server"
 version = "0.1.0"
-edition = "2024"
-
-[[bin]]
-name = "renpy-lsp-server"
-path = "src/main.rs"
-
-[lib]
-name = "renpy_lsp"
-path = "src/lib.rs"
+edition = "2021"
 
 [dependencies]
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-tower-lsp = { version = "0.20.0", features = ["proposed"] }
-tokio = { version = "1", features = ["full"] }
+tower-lsp = "0.20"
+tokio = { version = "1.37", features = ["io-std", "io-util", "macros", "rt-multi-thread"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+dashmap = "5.5"
+ropey = "1.6"
+regex = "1.10"
+tracing = "0.1"
+tracing-subscriber = "0.3"
+thiserror = "1"

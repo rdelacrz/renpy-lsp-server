@@ -1,15 +1,30 @@
-//! Ren'Py LSP server entry point.
+//! Ren'Py language server binary entry point.
 //!
-//! Wires `renpy_lsp::Backend` into a `tower-lsp` server that communicates
-//! over stdio.
+//! Initializes tracing, creates the [`tower_lsp`] service backed by [`backend::Backend`],
+//! and serves it over stdin/stdout using the Language Server Protocol.
+
+mod backend;
+mod document;
+mod error;
+mod data;
+mod features;
+mod index;
+mod parsing;
 
 use tower_lsp::{LspService, Server};
 
-/// Bootstrap the LSP server on stdio.
+/// Entry point: sets up tracing to stderr, then runs the LSP server on stdin/stdout.
 #[tokio::main]
 async fn main() {
-    let (stdin, stdout) = (tokio::io::stdin(), tokio::io::stdout());
+    tracing_subscriber::fmt()
+        .with_writer(std::io::stderr)
+        .with_ansi(false)
+        .init();
 
-    let (service, socket) = LspService::new(renpy_lsp::Backend::new);
+    let stdin = tokio::io::stdin();
+    let stdout = tokio::io::stdout();
+
+    let (service, socket) = LspService::new(backend::Backend::new);
+
     Server::new(stdin, stdout, socket).serve(service).await;
 }

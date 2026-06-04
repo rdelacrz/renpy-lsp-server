@@ -1,149 +1,96 @@
-//! Workspace index for the Ren'Py LSP server.
+//! Workspace-wide symbol index.
 //!
-//! Tracks open documents, a resolved symbol table, and cached diagnostics.
+//! Maintains a map from symbol names to their definition locations across all open documents.
+//! Updated incrementally as documents are opened, changed, or closed.
 
-use std::collections::HashMap;
+use dashmap::DashMap;
+use tower_lsp::lsp_types::*;
 
-use tower_lsp::lsp_types::{Diagnostic, DiagnosticSeverity, Position, Range, Url};
+use crate::parsing::parser::{ParsedSymbol, ParsedReference};
 
-use crate::analysis::{self, Symbol};
+/// Workspace-wide symbol index: name → list of (uri, range, kind).
+pub type SymbolIndex = DashMap<String, Vec<(Url, Range, SymbolKind)>>;
 
-/// Per-document state held in the index.
-#[derive(Debug)]
-pub struct DocumentStore {
-    /// Latest full text of the document, if known.
-    pub text: Option<String>,
-    /// Parsed symbols from the most recent analysis run.
-    pub symbols: Vec<Symbol>,
-    /// Most recent diagnostics for this document.
-    pub diagnostics: Vec<Diagnostic>,
+/// Update the workspace index for a given URI: remove old entries, add new ones.
+pub fn update_index(
+    index: &SymbolIndex,
+    uri: &Url,
+    symbols: &[ParsedSymbol],
+    _references: &[ParsedReference],
+) {
+    // Remove all entries for this URI
+    index.retain(|_, entries| {
+        entries.retain(|(u, _, _)| u != uri);
+        !entries.is_empty()
+    });
+
+    // Add new symbol entries
+    add_symbols_to_index(index, uri, symbols);
 }
 
-fn extract_error_line(message: &str) -> Option<u32> {
-    let lowered = message.to_ascii_lowercase();
-    for key in ["line ", "line:", "line="] {
-        if let Some(idx) = lowered.find(key) {
-            let start = idx + key.len();
-            let digits: String = message[start..]
-                .chars()
-                .take_while(|c| c.is_ascii_digit())
-                .collect();
-            if let Ok(line) = digits.parse::<u32>() {
-                return line.checked_sub(1).or(Some(0));
-            }
-        }
-    }
-    None
-}
-
-impl DocumentStore {
-    fn new() -> Self {
-        Self {
-            text: None,
-            symbols: Vec::new(),
-            diagnostics: Vec::new(),
+/// Recursively insert parsed symbols into the index.
+fn add_symbols_to_index(index: &SymbolIndex, uri: &Url, symbols: &[ParsedSymbol]) {
+    for sym in symbols {
+        index
+            .entry(sym.name.clone())
+            .or_default()
+            .push((uri.clone(), sym.selection_range, sym.kind));
+        // Recurse into children
+        if !sym.children.is_empty() {
+            add_symbols_to_index(index, uri, &sym.children);
         }
     }
 }
 
-/// Aggregated symbol table built from every document in the index.
-///
-/// Note: currently stores a flat `Vec<Symbol>`; symbol lookups use
-/// document-scoped queries through `WorkspaceIndex.documents`.  A
-/// `HashMap` for by-kind+name lookup can be added back when needed.
-#[derive(Debug)]
-pub struct SymbolTable {
-    pub symbols: Vec<Symbol>,
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-impl SymbolTable {
-    fn empty() -> Self {
-        Self {
-            symbols: Vec::new(),
-        }
+    #[test]
+    fn test_update_index_adds_symbols() {
+        let index = SymbolIndex::new();
+        let uri = Url::parse("file:///test.rpy").unwrap();
+        let symbols = vec![ParsedSymbol {
+            name: "start".into(),
+            kind: SymbolKind::FUNCTION,
+            range: Range {
+                start: Position { line: 0, character: 0 },
+                end: Position { line: 5, character: 0 },
+            },
+            selection_range: Range {
+                start: Position { line: 0, character: 6 },
+                end: Position { line: 0, character: 11 },
+            },
+            children: vec![],
+        }];
+        update_index(&index, &uri, &symbols, &[]);
+        assert!(index.contains_key("start"));
     }
 
-    /// Rebuild the table from a flat list of `Symbol`s.
-    fn rebuild(&mut self, incoming: Vec<Symbol>) {
-        self.symbols = incoming;
-    }
+    #[test]
+    fn test_update_index_removes_old() {
+        let index = SymbolIndex::new();
+        let uri = Url::parse("file:///test.rpy").unwrap();
+        let sym = ParsedSymbol {
+            name: "old_label".into(),
+            kind: SymbolKind::FUNCTION,
+            range: Range::default(),
+            selection_range: Range::default(),
+            children: vec![],
+        };
+        update_index(&index, &uri, &[sym], &[]);
+        assert!(index.contains_key("old_label"));
 
-    /// Return all symbols.
-    pub fn all(&self) -> &[Symbol] {
-        &self.symbols
-    }
-}
-
-/// Central workspace index shared across the server.
-#[derive(Debug)]
-pub struct WorkspaceIndex {
-    pub documents: HashMap<Url, DocumentStore>,
-    pub symbols: SymbolTable,
-}
-
-impl WorkspaceIndex {
-    pub fn new() -> Self {
-        Self {
-            documents: HashMap::new(),
-            symbols: SymbolTable::empty(),
-        }
-    }
-
-    /// Open (or replace) a document.
-    pub fn open_document(&mut self, uri: Url, text: &str) {
-        if let Some(doc) = self.documents.get_mut(&uri) {
-            doc.text = Some(text.to_string());
-        } else {
-            let mut store = DocumentStore::new();
-            store.text = Some(text.to_string());
-            self.documents.insert(uri, store);
-        }
-    }
-
-    /// Close a document.
-    pub fn close_document(&mut self, uri: &Url) {
-        self.documents.remove(uri);
-    }
-
-    /// Run analysis on every open document and rebuild the symbol table.
-    pub fn refresh(&mut self) {
-        let mut all_symbols = Vec::new();
-
-        for (_uri, doc) in self.documents.iter_mut() {
-            let text = match &doc.text {
-                Some(t) => t.clone(),
-                None => continue,
-            };
-
-            match analysis::analyze(&text) {
-                Ok(model) => {
-                    doc.symbols = model.symbols;
-                    all_symbols.extend(doc.symbols.clone());
-                    doc.diagnostics.clear();
-                }
-                Err(err) => {
-                    // Clear stale symbols on parse failure and surface the
-                    // analysis problem as an LSP diagnostic.
-                    doc.symbols.clear();
-                    let line = extract_error_line(err.message()).unwrap_or(0);
-                    doc.diagnostics = vec![Diagnostic {
-                        range: Range {
-                            start: Position::new(line, 0),
-                            end: Position::new(line, 1),
-                        },
-                        severity: Some(DiagnosticSeverity::ERROR),
-                        code: None,
-                        code_description: None,
-                        source: Some("renpy-lsp".to_string()),
-                        message: err.to_string(),
-                        related_information: None,
-                        tags: None,
-                        data: None,
-                    }];
-                }
-            }
-        }
-
-        self.symbols.rebuild(all_symbols);
+        // Update with new symbols (old_label gone)
+        let new_sym = ParsedSymbol {
+            name: "new_label".into(),
+            kind: SymbolKind::FUNCTION,
+            range: Range::default(),
+            selection_range: Range::default(),
+            children: vec![],
+        };
+        update_index(&index, &uri, &[new_sym], &[]);
+        assert!(!index.contains_key("old_label"));
+        assert!(index.contains_key("new_label"));
     }
 }

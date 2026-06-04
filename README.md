@@ -1,112 +1,83 @@
-# Ren'Py LSP Server
+# renpy-language-server
 
-A **Rust** implementation of a [Language Server Protocol](https://microsoft.github.io/language-server-protocol/) (LSP) server for [Ren'Py](https://www.renpy.org/), built with [`tower-lsp`](https://crates.io/crates/tower-lsp).
+A [Language Server Protocol](https://microsoft.github.io/language-server-protocol/) server for the
+[Ren'Py](https://www.renpy.org/) visual-novel scripting language, written in Rust on
+[`tower-lsp`](https://github.com/ebkalderon/tower-lsp).
 
-This server powers intelligent editing features for Ren'Py scripts (`.rpy` files) in editors that support LSP — including [Zed](https://zed.dev/), VS Code, Neovim, and others.
+This is the **language-intelligence half** of the Zed Ren'Py extension. It is a standalone native
+binary that speaks LSP over **stdio**. The Zed extension (a WASM crate in the repo root) locates and
+spawns this binary; the editor then drives it with `textDocument/*` requests. The server is editor
+agnostic — any LSP client can use it.
 
-## Features
+```
+Zed editor ──spawns──▶ renpy-language-server  (this crate, native binary)
+          ◀──LSP/stdio──▶  completion · hover · definition · diagnostics · …
+```
 
-- **Full text document synchronization** (`didOpen`, `didChange`, `didClose`, `didSave`)
-- **Document symbols** — outline view of labels, screens, images, defines, etc.
-- **Go to Definition** — jump to label/screen/define/image declarations (cross-file support)
-- **Hover** — shows symbol kind, name, and line number
-- **Completion** — context-aware suggestions:
-  - Ren'Py keywords (`label`, `screen`, `image`, `define`, `transform`, `style`, `jump`, `call`, `show`, `scene`, `menu`, etc.)
-  - Project symbols filtered by context (e.g. only labels after `jump`/`call`, only images after `show`/`scene`)
-- **Diagnostics** — parse errors, missing colons, invalid identifiers, duplicate labels
-- **References** — find all usages of a label, screen, or symbol across the workspace
-- **Workspace Symbol Search** — fuzzy search across all symbols in the project
+## Capabilities
 
-## Architecture
+Advertised in `initialize` (see `src/backend.rs`):
 
-The server is split into clean layers:
+| LSP request | Module | Notes |
+|-------------|--------|-------|
+| `textDocument/completion` | `features/completion.rs` | keywords, screen displayables, `renpy.`/`config.`/`gui.` API, in-file symbols. Triggers: `.` ` ` `@` `-` `(` |
+| `textDocument/hover` | `features/hover.rs` | docstring + signature from the embedded Ren'Py API DB |
+| `textDocument/signatureHelp` | `features/signature.rs` | param hints; triggers `(` `,` `=` |
+| `textDocument/definition` | `features/definition.rs` | resolves via the workspace symbol index |
+| `textDocument/references` | `backend.rs` (inline) | word-boundary search across open docs, string-literals filtered out |
+| `textDocument/documentSymbol` | `features/symbols.rs` | labels, screens, transforms, defines, defaults, styles, images, classes |
+| `textDocument/documentColor` (+ `colorPresentation`) | `features/color.rs` | 9 formats: hex `#rgb`/`#rgba`/`#rrggbb`/`#rrggbbaa`, `Color((…))`, `rgb=()`, `color=()` |
+| `textDocument/foldingRange` | `backend.rs` (inline) | indentation-based |
+| `textDocument/documentHighlight` | `backend.rs` (inline) | same-identifier occurrences |
+| `textDocument/publishDiagnostics` | `features/diagnostics.rs` | pushed on change/save; ~11 checks (indentation/tabs, invalid/reserved variable names, obsolete methods, undefined persistents/store vars, `=` in `if`/`while`, stray `$`, invalid filename) |
 
-- **`src/main.rs`** — Tokio-based stdio server entrypoint
-- **`src/lib.rs`** — Core `Backend` implementing the `LanguageServer` trait
-- **`src/analysis.rs`** — Pure parser that extracts top-level symbols from Ren'Py source (line-based, zero-indentation only)
-- **`src/index.rs`** — Workspace index maintaining open documents, symbol table, and cached diagnostics
+Text sync is **FULL** (whole document on each change). Diagnostics are **push** based.
 
-Symbols are stored with line numbers (not byte offsets) for simplicity and LSP compatibility.
+## Architecture / source layout
 
-## Installation & Usage
+```
+server/
+├── Cargo.toml             # own [workspace]; deps: tower-lsp, tokio, dashmap, ropey, regex, serde, thiserror, tracing
+├── assets/
+│   ├── renpy.json         # Ren'Py API/keyword DB (from the VSCode extension, MIT) — embedded via include_str!
+│   └── renpyauto.json     # context completion options (pipe-delimited, {placeholder} expansion)
+└── src/
+    ├── main.rs            # entry: stdio transport wiring + tracing→stderr (stdout is the LSP channel)
+    ├── backend.rs         # `Backend` + `impl LanguageServer`: capabilities, lifecycle, FULL sync,
+    │                      #   request dispatch, and the inline references/folding/highlight handlers
+    ├── document.rs        # DocumentState (rope, version, cached symbols+diagnostics) + DocumentStore (DashMap)
+    ├── index.rs           # workspace symbol index (name → [(uri, range, kind)]) populated on change
+    ├── error.rs           # crate-wide `Error` enum (thiserror) + `Result<T>` alias
+    ├── parsing/
+    │   ├── parser.rs      # line/indentation regex parser → symbols + references (mirrors the VSCode tokenizer)
+    │   └── text_utils.rs  # filter_string_literals, position_is_clean, keyword_prefix
+    ├── data/
+    │   ├── loader.rs      # load_game_data(): parses the embedded JSON assets into GameData
+    │   └── keywords.rs    # static Ren'Py keyword / screen-displayable / ATL / style property tables
+    └── features/          # one module per LSP feature (see capability table above)
+```
 
-### From Source
+### Parsing model (v1)
+A line-by-line, indentation-aware **regex** parser (`parsing/parser.rs`) — not a full grammar. It
+extracts definitions (`label`/`screen`/`transform`/`image`/`define`/`default`/`style` + python
+`def`/`class` + `Character(...)`) and references (`jump`/`call`/`show`/`scene`/`hide`/`use`). Syntax
+*highlighting* is handled separately by the tree-sitter grammar (see `../tree-sitter-renpy`), not by
+this server.
+
+## Build, test, run
 
 ```bash
-cd renpy-lsp-server
-cargo build --release
+cd server
+cargo build --release        # produces target/release/renpy-language-server
+cargo test                   # 43 unit tests (parser, color, loader, index, diagnostics, text_utils)
 ```
 
-The binary will be at `target/release/renpy-lsp-server`.
+The server reads/writes LSP on stdio; **all logging goes to stderr** (`tracing`). To use it with the
+Zed dev extension, build it and either put it on `PATH` or set
+`lsp.renpy-language-server.binary.path` in Zed settings (the extension calls `worktree.which(...)`
+first, then that setting).
 
-### With Zed
-
-1. Build the release binary
-2. Configure Zed to use it (see the companion `zed-language-renpy` extension)
-3. Open a Ren'Py project — the language server should auto-start on `.rpy` files
-
-### With Other Editors
-
-Configure your editor to run the binary with stdio transport. Most LSP clients support this via a language server configuration.
-
-## Development
-
-### Running Tests
-
-```bash
-# Run all tests
-cargo test
-
-# Run with verbose output
-cargo test -- --nocapture
-
-# Check formatting and linting
-cargo fmt --all -- --check
-cargo check
-```
-
-### Building
-
-```bash
-# Debug build
-cargo build
-
-# Optimized release build
-cargo build --release
-```
-
-### Project Structure
-
-```
-renpy-lsp-server/
-├── Cargo.toml
-├── src/
-│   ├── main.rs          # Binary entrypoint
-│   ├── lib.rs           # LSP backend + handlers
-│   ├── analysis.rs      # Ren'Py parser & symbol extraction
-│   └── index.rs         # Workspace index & symbol table
-└── README.md
-```
-
-## Testing
-
-The project includes comprehensive tests:
-
-- **Parser tests** (`analysis.rs`): symbol extraction, error cases, CRLF handling, identifier validation
-- **Integration tests** (`lib.rs`): full LSP handler behavior, index updates, completion, hover, definition
-- **21 tests total**, all passing
-
-## Contributing
-
-1. Run `cargo test` and `cargo fmt` before submitting changes
-2. Follow the existing code style and architecture
-3. Add tests for new features
-4. Update `CHECKLIST.md` and `REVIEW_NOTES.md` in `.hermes-orchestration/`
-
-## License
-
-This project is part of the Zed Ren'Py language support ecosystem. See the root repository for licensing information.
-
----
-
-**Made with ❤️ for the Ren'Py community**
+## Deferred (future work)
+- `textDocument/semanticTokens` body (legend is declared; compute returns `None` — tree-sitter does highlighting for now).
+- Workspace-wide file scanning on `initialized` (the index currently covers open documents only), which also widens `references`.
+- Context-aware ATL/style/screen-property completion (tables exist in `data/keywords.rs`, not yet wired to cursor context).
