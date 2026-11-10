@@ -18,18 +18,23 @@ pub fn compute(
 ) -> Option<GotoDefinitionResponse> {
     let doc = documents.get(uri)?;
     let line_text = doc.rope.get_line(position.line as usize)?.to_string();
-    let word = text_utils::keyword_prefix(&line_text, position.character as usize)?;
+    let word = text_utils::identifier_at_position(&line_text, position.character as usize)?;
 
     let entries = index.get(&word)?;
     let locations: Vec<Location> = entries
         .iter()
-        .map(|(u, range, _)| Location { uri: u.clone(), range: *range })
+        .map(|(u, range, _)| Location {
+            uri: u.clone(),
+            range: *range,
+        })
         .collect();
 
     if locations.is_empty() {
         None
     } else if locations.len() == 1 {
-        Some(GotoDefinitionResponse::Scalar(locations.into_iter().next().unwrap()))
+        Some(GotoDefinitionResponse::Scalar(
+            locations.into_iter().next().unwrap(),
+        ))
     } else {
         Some(GotoDefinitionResponse::Array(locations))
     }

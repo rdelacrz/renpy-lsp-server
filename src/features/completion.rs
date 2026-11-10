@@ -26,28 +26,31 @@ pub fn compute(
         return None;
     }
 
-    let prefix = text_utils::keyword_prefix(&line_text, position.character as usize)
-        .unwrap_or_default();
+    let prefix =
+        text_utils::keyword_prefix(&line_text, position.character as usize).unwrap_or_default();
 
     let mut items: Vec<CompletionItem> = Vec::new();
 
-    // Context: renpy.* config.* gui.*
-    if prefix.starts_with("renpy.") {
-        let filter = &prefix["renpy.".len()..];
-        for (key, entry) in &game_data.renpy {
-            let short = key.strip_prefix("renpy.").unwrap_or(key);
-            if filter.is_empty() || short.starts_with(filter) {
-                items.push(make_item(short, entry.kind.as_deref(), entry.docstring.as_deref()));
-            }
-        }
-        return Some(CompletionResponse::Array(items));
-    }
-    if prefix.starts_with("config.") {
-        let filter = &prefix["config.".len()..];
-        for (key, entry) in &game_data.config {
-            let short = key.strip_prefix("config.").unwrap_or(key);
-            if filter.is_empty() || short.starts_with(filter) {
-                items.push(make_item(short, entry.kind.as_deref(), entry.docstring.as_deref()));
+    // Return only the suffix after the last dot; inserting `music.play` after
+    // `renpy.music.` would otherwise duplicate the namespace in Zed.
+    let namespace_end = prefix.rfind('.').map_or(0, |index| index + 1);
+    let namespace = &prefix[..namespace_end];
+    let filter = &prefix[namespace_end..];
+    if prefix.starts_with("renpy.") || prefix.starts_with("config.") {
+        let entries = if prefix.starts_with("renpy.") {
+            &game_data.renpy
+        } else {
+            &game_data.config
+        };
+        for (key, entry) in entries {
+            if let Some(short) = key.strip_prefix(namespace) {
+                if short.starts_with(filter) {
+                    items.push(make_item(
+                        short,
+                        entry.kind.as_deref(),
+                        entry.docstring.as_deref(),
+                    ));
+                }
             }
         }
         return Some(CompletionResponse::Array(items));
@@ -126,12 +129,15 @@ mod tests {
     fn make_store(text: &str) -> (Url, DocumentStore, GameData) {
         let store = DocumentStore::new();
         let uri = Url::parse("file:///test.rpy").unwrap();
-        store.upsert(uri.clone(), DocumentState {
-            rope: ropey::Rope::from_str(text),
-            version: 1,
-            symbols: vec![],
-            diagnostics: vec![],
-        });
+        store.upsert(
+            uri.clone(),
+            DocumentState {
+                rope: ropey::Rope::from_str(text),
+                version: 1,
+                symbols: vec![],
+                diagnostics: vec![],
+            },
+        );
         let gd = crate::data::loader::load_game_data().unwrap();
         (uri, store, gd)
     }
@@ -139,7 +145,15 @@ mod tests {
     #[test]
     fn test_keywords_returned() {
         let (uri, store, gd) = make_store("lab\n");
-        let result = compute(&uri, Position { line: 0, character: 3 }, &store, &gd);
+        let result = compute(
+            &uri,
+            Position {
+                line: 0,
+                character: 3,
+            },
+            &store,
+            &gd,
+        );
         let items = match result.unwrap() {
             CompletionResponse::Array(v) => v,
             _ => panic!("expected array"),
@@ -150,7 +164,15 @@ mod tests {
     #[test]
     fn test_no_completion_in_comment() {
         let (uri, store, gd) = make_store("# label\n");
-        let result = compute(&uri, Position { line: 0, character: 5 }, &store, &gd);
+        let result = compute(
+            &uri,
+            Position {
+                line: 0,
+                character: 5,
+            },
+            &store,
+            &gd,
+        );
         assert!(result.is_none());
     }
 }

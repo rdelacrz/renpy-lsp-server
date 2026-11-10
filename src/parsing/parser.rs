@@ -4,6 +4,7 @@
 //! (jump, call, show, use) from Ren'Py source text. Symbols are organized into a nested
 //! tree based on indentation level.
 
+use crate::parsing::text_utils;
 use regex::Regex;
 use std::sync::OnceLock;
 use tower_lsp::lsp_types::*;
@@ -114,8 +115,8 @@ fn extract_symbol_matches(lines: &[&str]) -> Vec<SymbolMatch> {
                     kind: *kind,
                     indent,
                     line: i as u32,
-                    name_start: name_match.start() as u32,
-                    name_end: name_match.end() as u32,
+                    name_start: text_utils::byte_to_utf16(line, name_match.start()) as u32,
+                    name_end: text_utils::byte_to_utf16(line, name_match.end()) as u32,
                 });
                 break;
             }
@@ -205,14 +206,24 @@ fn push_ref(
 ) {
     let m = caps.get(1).unwrap();
     let name = m.as_str().trim().to_string();
-    let name = if is_image { filter_image_modifiers(&name) } else { name };
+    let name = if is_image {
+        filter_image_modifiers(&name)
+    } else {
+        name
+    };
     if !name.is_empty() {
         refs.push(ParsedReference {
             name,
             kind,
             range: Range {
-                start: Position { line, character: m.start() as u32 },
-                end: Position { line, character: m.end() as u32 },
+                start: Position {
+                    line,
+                    character: m.start() as u32,
+                },
+                end: Position {
+                    line,
+                    character: m.end() as u32,
+                },
             },
         });
     }
@@ -258,18 +269,32 @@ fn build_symbol_tree(lines: &[&str], matches: Vec<SymbolMatch>) -> Vec<ParsedSym
             .map_or(m.line, |next| next.line);
 
         let end_line = find_block_end(lines, last_child_line.max(m.line), m.indent);
-        let end_char = lines.get(end_line as usize).map_or(0, |l| l.len() as u32);
+        let end_char = lines
+            .get(end_line as usize)
+            .map_or(0, |l| l.encode_utf16().count() as u32);
 
         symbols.push(ParsedSymbol {
             name: m.name.clone(),
             kind: m.kind,
             range: Range {
-                start: Position { line: m.line, character: 0 },
-                end: Position { line: end_line, character: end_char },
+                start: Position {
+                    line: m.line,
+                    character: 0,
+                },
+                end: Position {
+                    line: end_line,
+                    character: end_char,
+                },
             },
             selection_range: Range {
-                start: Position { line: m.line, character: m.name_start },
-                end: Position { line: m.line, character: m.name_end },
+                start: Position {
+                    line: m.line,
+                    character: m.name_start,
+                },
+                end: Position {
+                    line: m.line,
+                    character: m.name_end,
+                },
             },
             children: Vec::new(),
         });
@@ -303,7 +328,10 @@ fn nest_symbols(matches: &[SymbolMatch], symbols: &mut [ParsedSymbol]) {
 
     // Build bottom-up to ensure children are fully populated
     for i in (0..n).rev() {
-        let children: Vec<ParsedSymbol> = children_map[i].iter().map(|&ci| symbols[ci].clone()).collect();
+        let children: Vec<ParsedSymbol> = children_map[i]
+            .iter()
+            .map(|&ci| symbols[ci].clone())
+            .collect();
         symbols[i].children = children;
     }
 }
@@ -424,12 +452,24 @@ mod tests {
             name: "test".into(),
             kind: SymbolKind::FUNCTION,
             range: Range {
-                start: Position { line: 0, character: 0 },
-                end: Position { line: 2, character: 10 },
+                start: Position {
+                    line: 0,
+                    character: 0,
+                },
+                end: Position {
+                    line: 2,
+                    character: 10,
+                },
             },
             selection_range: Range {
-                start: Position { line: 0, character: 6 },
-                end: Position { line: 0, character: 10 },
+                start: Position {
+                    line: 0,
+                    character: 6,
+                },
+                end: Position {
+                    line: 0,
+                    character: 10,
+                },
             },
             children: vec![],
         }];

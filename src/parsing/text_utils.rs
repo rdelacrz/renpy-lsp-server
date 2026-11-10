@@ -72,7 +72,11 @@ pub fn filter_string_literals(line: &str) -> String {
                 i += 3;
                 // consume until closing triple
                 while i < chars.len() {
-                    if i + 2 < chars.len() && chars[i] == ch && chars[i + 1] == ch && chars[i + 2] == ch {
+                    if i + 2 < chars.len()
+                        && chars[i] == ch
+                        && chars[i + 1] == ch
+                        && chars[i + 2] == ch
+                    {
                         result.push(ch);
                         result.push(ch);
                         result.push(ch);
@@ -161,7 +165,11 @@ pub fn keyword_prefix(line: &str, col: usize) -> Option<String> {
     }
     // Walk back from col over the current word
     let mut start = col;
-    while start > 0 && (chars[start - 1].is_alphanumeric() || chars[start - 1] == '_') {
+    while start > 0
+        && (chars[start - 1].is_alphanumeric()
+            || chars[start - 1] == '_'
+            || chars[start - 1] == '.')
+    {
         start -= 1;
     }
     // If we didn't move, col is not at a word char
@@ -183,9 +191,54 @@ pub fn keyword_prefix(line: &str, col: usize) -> Option<String> {
     }
 }
 
+/// Extract the complete dotted identifier under the cursor, not just a completion prefix.
+pub fn identifier_at_position(line: &str, col: usize) -> Option<String> {
+    if !position_is_clean(line, col) {
+        return None;
+    }
+    let chars: Vec<char> = line.chars().collect();
+    let col = utf16_to_char_idx(line, col);
+    let is_ident = |c: char| c.is_alphanumeric() || c == '_' || c == '.';
+    let mut start = col;
+    let mut end = col;
+    while start > 0 && is_ident(chars[start - 1]) {
+        start -= 1;
+    }
+    while end < chars.len() && is_ident(chars[end]) {
+        end += 1;
+    }
+    let word: String = chars[start..end].iter().collect();
+    (!word.is_empty() && word != ".").then_some(word)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn completion_after_dot() {
+        assert_eq!(keyword_prefix("$ renpy.", 8).as_deref(), Some("renpy."));
+        assert_eq!(
+            keyword_prefix("$ renpy.music.", 14).as_deref(),
+            Some("renpy.music.")
+        );
+    }
+
+    #[test]
+    fn identifier_at_start_middle_end_and_unicode() {
+        for col in [0, 3, 8, 11] {
+            assert_eq!(
+                identifier_at_position("renpy.pause(1)", col).as_deref(),
+                Some("renpy.pause")
+            );
+        }
+        assert_eq!(
+            identifier_at_position("$ 名前 = 1", 3).as_deref(),
+            Some("名前")
+        );
+        assert!(identifier_at_position("# renpy.pause", 5).is_none());
+        assert!(identifier_at_position("\"renpy.pause\"", 5).is_none());
+    }
 
     #[test]
     fn test_filter_string_literals_basic() {
@@ -232,7 +285,10 @@ mod tests {
     #[test]
     fn test_keyword_prefix_dotted() {
         let line = "renpy.music.play";
-        assert_eq!(keyword_prefix(line, 16), Some("renpy.music.play".to_string()));
+        assert_eq!(
+            keyword_prefix(line, 16),
+            Some("renpy.music.play".to_string())
+        );
     }
 
     #[test]
@@ -352,8 +408,8 @@ mod tests {
     /// Regression: slicing at a raw UTF-16 col after a multi-byte char must not panic.
     #[test]
     fn test_utf16_to_byte_no_panic_mid_char() {
-        let line = "café";  // 'é' is 2 bytes in UTF-8, 1 UTF-16 unit
-        // byte offset of col 4 should be safe (after 'é')
+        let line = "café"; // 'é' is 2 bytes in UTF-8, 1 UTF-16 unit
+                           // byte offset of col 4 should be safe (after 'é')
         let b = utf16_to_byte(line, 4);
         let _prefix = &line[..b]; // must not panic
         assert_eq!(_prefix, "café");
@@ -377,7 +433,10 @@ mod tests {
     fn test_keyword_prefix_col_max_no_panic() {
         let line = "renpy.play";
         // usize::MAX col → utf16_to_char_idx clamps to line length, returns full prefix
-        assert_eq!(keyword_prefix(line, usize::MAX), Some("renpy.play".to_string()));
+        assert_eq!(
+            keyword_prefix(line, usize::MAX),
+            Some("renpy.play".to_string())
+        );
     }
 
     /// keyword_prefix after an emoji (astral/surrogate pair) resolves correctly.
@@ -446,7 +505,12 @@ mod tests {
         // char boundaries in UTF-16: あ=1, 😀=2, x=1, é=1 → total 5
         for n in [0usize, 1, 3, 4, 5] {
             let byte = utf16_to_byte(line, n);
-            assert_eq!(byte_to_utf16(line, byte), n, "roundtrip failed for utf16_col={}", n);
+            assert_eq!(
+                byte_to_utf16(line, byte),
+                n,
+                "roundtrip failed for utf16_col={}",
+                n
+            );
         }
     }
 
@@ -465,18 +529,29 @@ mod tests {
 
         // Byte offsets from regex
         let start_byte = m.start(); // 20
-        let end_byte = m.end();     // 25
+        let end_byte = m.end(); // 25
 
         // Convert to UTF-16 columns (as done in compute_references / compute_document_highlight)
         let start_utf16 = byte_to_utf16(&filtered, start_byte);
         let end_utf16 = byte_to_utf16(&filtered, end_byte);
 
         // "    " = 4 UTF-16 units, "こんにちは" = 5 UTF-16 units, " " = 1, total before myvar = 10
-        assert_eq!(start_utf16, 10, "start should be UTF-16 col 10, not byte col {}", start_byte);
-        assert_eq!(end_utf16, 15, "end should be UTF-16 col 15, not byte col {}", end_byte);
+        assert_eq!(
+            start_utf16, 10,
+            "start should be UTF-16 col 10, not byte col {}",
+            start_byte
+        );
+        assert_eq!(
+            end_utf16, 15,
+            "end should be UTF-16 col 15, not byte col {}",
+            end_byte
+        );
 
         // Verify these are NOT the byte offsets (which would be wrong)
-        assert_ne!(start_utf16 as usize, start_byte, "must differ from raw byte offset");
+        assert_ne!(
+            start_utf16 as usize, start_byte,
+            "must differ from raw byte offset"
+        );
 
         // Round-trip: converting back to byte should recover the original byte positions
         assert_eq!(utf16_to_byte(line, start_utf16 as usize), start_byte);

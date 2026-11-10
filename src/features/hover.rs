@@ -23,10 +23,12 @@ pub fn compute(
         return None;
     }
 
-    let word = text_utils::keyword_prefix(&line_text, position.character as usize)?;
+    let word = text_utils::identifier_at_position(&line_text, position.character as usize)?;
 
     // Look up in game data (renpy, config, internal)
-    let entry = game_data.renpy.get(&word)
+    let entry = game_data
+        .renpy
+        .get(&word)
         .or_else(|| game_data.config.get(&word))
         .or_else(|| game_data.internal.get(&word));
 
@@ -59,12 +61,15 @@ mod tests {
     fn make_store(text: &str) -> (Url, DocumentStore, GameData) {
         let store = DocumentStore::new();
         let uri = Url::parse("file:///test.rpy").unwrap();
-        store.upsert(uri.clone(), DocumentState {
-            rope: ropey::Rope::from_str(text),
-            version: 1,
-            symbols: vec![],
-            diagnostics: vec![],
-        });
+        store.upsert(
+            uri.clone(),
+            DocumentState {
+                rope: ropey::Rope::from_str(text),
+                version: 1,
+                symbols: vec![],
+                diagnostics: vec![],
+            },
+        );
         let gd = crate::data::loader::load_game_data().unwrap();
         (uri, store, gd)
     }
@@ -73,14 +78,30 @@ mod tests {
     fn test_hover_known_symbol() {
         let (uri, store, gd) = make_store("renpy.pause\n");
         // cursor at end of "renpy.pause" (col 11) so keyword_prefix resolves the full dotted name
-        let result = compute(&uri, Position { line: 0, character: 11 }, &store, &gd);
+        let result = compute(
+            &uri,
+            Position {
+                line: 0,
+                character: 11,
+            },
+            &store,
+            &gd,
+        );
         assert!(result.is_some());
     }
 
     #[test]
     fn test_hover_in_comment_returns_none() {
         let (uri, store, gd) = make_store("# renpy.pause\n");
-        let result = compute(&uri, Position { line: 0, character: 8 }, &store, &gd);
+        let result = compute(
+            &uri,
+            Position {
+                line: 0,
+                character: 8,
+            },
+            &store,
+            &gd,
+        );
         assert!(result.is_none());
     }
 }
